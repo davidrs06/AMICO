@@ -618,8 +618,8 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
-        timedep_A = np.dot(np.repeat(self.timedep_A,len(self.timedep_Dinf)),xEC)
-        timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)
+        timedep_A = np.dot(np.repeat(self.timedep_A,len(self.timedep_Dinf)),xEC)/xEC.sum()
+        timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)/xEC.sum()
         return [v, a, d, timedep_A, timedep_Dinf], dirs, x, A
 
 class NODDI( BaseModel ) :
