@@ -289,8 +289,8 @@ class CylinderZeppelinBall( BaseModel ) :
         self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
         self.ICVFs  = np.arange(0.3,0.9,0.1)                                         # Intra-cellular volume fraction(s) [0..1]
         self.d_ISOs = np.array( [ 2.0E-3 ] )                                         # Isotropic diffusivitie(s) [mm^2/s]
-	self.isExvivo  = False                                                       # Add dot compartment to dictionary (exvivo data)
-	self.singleb0  = True                                                        # Merge b0 images into a single volume for fitting
+        self.isExvivo  = False                                                       # Add dot compartment to dictionary (exvivo data)
+        self.singleb0  = True                                                        # Merge b0 images into a single volume for fitting
 
 
     def set( self, d_par, Rs, ICVFs, d_ISOs ) :
@@ -415,11 +415,11 @@ class CylinderZeppelinBall( BaseModel ) :
             A[:,o:(o+n2)] = KERNELS['wmh'][:,i1,i2,:].T
             o += n2
         A[:,o:] = KERNELS['iso'].T
-	if self.isExvivo:
-		A = np.hstack((A,np.ones((A.shape[0],1))))
-	if self.singleb0:
-		A = np.vstack((np.ones((1,A.shape[1])),A[self.scheme.dwi_idx,:]))
-		y = np.concatenate((y[self.scheme.b0_idx].mean(),y[self.scheme.dwi_idx]))
+        if self.isExvivo:
+            A = np.hstack((A,np.ones((A.shape[0],1))))
+        if self.singleb0:
+            A = np.vstack((np.ones((1,A.shape[1])),A[self.scheme.dwi_idx,:]))
+            y = np.hstack((y[self.scheme.b0_idx].mean(),y[self.scheme.dwi_idx]))
 
         # empty dictionary
         if A.shape[1] == 0 :
@@ -437,6 +437,190 @@ class CylinderZeppelinBall( BaseModel ) :
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         return [v, a, d], dirs, x, A
 
+class CylinderTimedepZeppelinBall( BaseModel ) :
+    """Implements the Cylinder-Time dependent Zeppelin-Ball model [1].
+
+    The intra-cellular contributions from within the axons are modeled as "cylinders"
+    with specific radii (Rs) and a given axial diffusivity (d_par).
+    Extra-cellular contributions are modeled as time dependent tensors with the same axial diffusivity
+    as the cylinders (d_par) and whose perpendicular diffusivities are calculated from of a set of
+    characteristic coefficients A and bulk diffusions Dinf as well as the shell's diffusion times.
+    Isotropic contributions are modeled as tensors with isotropic diffusivities (d_ISOs).
+
+    NB: this model works only with schemes containing the full specification of
+        the diffusion gradients (eg gradient strength, small delta etc).
+
+    NB: this model requires Camino to be installed and properly configured
+        in the system; in particular, the script "datasynth" must be placed
+        in your system path.
+
+    References
+    ----------
+    .. [1] De Santis et al. (2012) Including diffusion time dependende in the extra-axonal space improves
+           in vivo estimates of axonal diameter and density in human white matter. NeuroImage, 59: 2241-54
+    """
+
+    def __init__( self ) :
+        self.id         = 'CylinderTimedepZeppelinBall'
+        self.name       = 'Cylinder-TimedepZeppelin-Ball'
+        self.maps_name  = [ 'v', 'a', 'd', 'A', 'Dinf' ]
+        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density', 'Characteristic coefficient A', 'Bulk diffusion Dinf' ]
+
+        self.d_par  = 0.6E-3                                                         # Parallel diffusivity [mm^2/s]
+        self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
+        self.timedep_A = np.linspace(0.1,1,5)*1E-6                                   # Characteristic coefficient for timedependency [mm^2]
+        self.timedep_Dinf = np.linspace(0.01,0.2,5)*1E-3                             # Bulk diffusion for timedependency [mm^2/s]
+        self.d_ISOs = np.array( [ 2.0E-3 ] )                                         # Isotropic diffusivitie(s) [mm^2/s]
+        self.isExvivo  = False                                                       # Add dot compartment to dictionary (exvivo data)
+        self.singleb0  = True                                                        # Merge b0 images into a single volume for fitting
+
+
+    def set( self, d_par, Rs, ICVFs, d_ISOs, A, Dinf ) :
+        self.d_par  = d_par
+        self.Rs     = np.array(Rs)
+        self.ICVFs  = np.array(ICVFs)
+        self.d_ISOs = np.array(d_ISOs)
+        self.timedep_A = A
+        self.timedep_Dinf = Dinf
+
+
+    def set_solver( self, lambda1 = 0.0, lambda2 = 4.0 ) :
+        params = {}
+        params['mode']    = 2
+        params['pos']     = True
+        params['lambda1'] = lambda1
+        params['lambda2'] = lambda2
+        return params
+
+
+    def generate( self, out_path, aux, idx_in, idx_out ) :
+        if self.scheme.version != 1 :
+            raise RuntimeError( 'This model requires a "VERSION: STEJSKALTANNER" scheme.' )
+
+        scheme_high = amico.lut.create_high_resolution_scheme( self.scheme, b_scale=1E6 )
+        filename_scheme = pjoin( out_path, 'scheme.txt' )
+        np.savetxt( filename_scheme, scheme_high.raw, fmt='%15.8e', delimiter=' ', header='VERSION: STEJSKALTANNER', comments='' )
+
+        # temporary file where to store "datasynth" output
+        filename_signal = pjoin( tempfile._get_default_tempdir(), next(tempfile._get_candidate_names())+'.Bfloat' )
+
+        nATOMS = len(self.Rs) + len(self.timedep_A)*len(self.timedep_Dinf) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Cylinder(s)
+        for R in self.Rs :
+            CMD = 'datasynth -synthmodel compartment 1 CYLINDERGPD %E 0 0 %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( self.d_par*1E-6, R, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+
+            lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, False )
+            np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+            progress.update()
+
+        # Zeppelin(s)
+        for A in self.timedep_A:
+            for Dinf in self.timedep_Dinf:
+                signal = np.ones(scheme_high.nS)
+                for s in range(1,len(scheme_high.shells)):
+                    dperp = Dinf+A*((np.log(scheme_high.shells[s]['Delta']/scheme_high.shells[s]['delta']))+3./2.)/(scheme_high.shells[s]['Delta']-scheme_high.shells[s]['delta']/3.)
+                    gtab = gradient_table( scheme_high.shells[s]['b']*np.ones(len(scheme_high.shells[s]['grad'])),scheme_high.shells[s]['grad'] )
+                    signal[scheme_high.shells[s]['idx']] = single_tensor(gtab,evals = [dperp,dperp,self.d_par])
+                lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, False )
+                np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+                progress.update()
+
+        # Ball(s)
+        for d in self.d_ISOs :
+            CMD = 'datasynth -synthmodel compartment 1 BALL %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( d*1e-6, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+
+            lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, True )
+            np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+            progress.update()
+
+
+    def resample( self, in_path, idx_out, Ylm_out ) :
+        KERNELS = {}
+        KERNELS['model'] = self.id
+        KERNELS['wmr'] = np.zeros( (len(self.Rs),181,181,self.scheme.nS,), dtype=np.float32 )
+        KERNELS['wmh'] = np.zeros( (len(self.timedep_A)*len(self.timedep_Dinf),181,181,self.scheme.nS,), dtype=np.float32 )
+        KERNELS['iso'] = np.zeros( (len(self.d_ISOs),self.scheme.nS,), dtype=np.float32 )
+
+        nATOMS = len(self.Rs) + len(self.timedep_A)*len(self.timedep_Dinf) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Cylinder(s)
+        for i in xrange(len(self.Rs)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['wmr'][i,:,:,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, False )
+            progress.update()
+
+        # Zeppelin(s)
+        for i in xrange(len(self.timedep_A)*len(self.timedep_Dinf)):
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['wmh'][i,:,:,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, False )
+            progress.update()
+
+        # Ball(s)
+        for i in xrange(len(self.d_ISOs)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['iso'][i,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, True )
+            progress.update()
+
+        return KERNELS
+
+
+    def fit( self, y, dirs, KERNELS, params ) :
+        nD = dirs.shape[0]
+        n1 = len(self.Rs)
+        n2 = len(self.timedep_A)*len(self.timedep_Dinf)
+        n3 = len(self.d_ISOs)
+
+        # prepare DICTIONARY from dirs and lookup tables
+        A = np.zeros( (len(y), nD*(n1+n2)+n3 ), dtype=np.float64, order='F' )
+        o = 0
+        for i in xrange(nD) :
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[i] )
+            A[:,o:(o+n1)] = KERNELS['wmr'][:,i1,i2,:].T
+            o += n1
+        for i in xrange(nD) :
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[i] )
+            A[:,o:(o+n2)] = KERNELS['wmh'][:,i1,i2,:].T
+            o += n2
+        A[:,o:] = KERNELS['iso'].T
+        if self.isExvivo:
+            A = np.hstack((A,np.ones((A.shape[0],1))))
+        if self.singleb0:
+            A = np.vstack((np.ones((1,A.shape[1])),A[self.scheme.dwi_idx,:]))
+            y = np.hstack((y[self.scheme.b0_idx].mean(),y[self.scheme.dwi_idx]))
+
+        # empty dictionary
+        if A.shape[1] == 0 :
+            return [0, 0, 0], None, None, None
+
+        # fit
+        x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
+
+        # return estimates
+        f1 = x[ :(nD*n1) ].sum()
+        f2 = x[ (nD*n1):(nD*(n1+n2)) ].sum()
+        v = f1 / ( f1 + f2 + 1e-16 )
+        xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
+        a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
+        d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
+        xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
+        timedep_A = np.dot(np.repeat(self.timedep_A,len(self.timedep_Dinf)),xEC)
+        timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)
+        return [v, a, d, timedep_A, timedep_Dinf], dirs, x, A
 
 class NODDI( BaseModel ) :
     """Implements the NODDI model [2].
