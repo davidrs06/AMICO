@@ -525,7 +525,7 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         for A in self.timedep_A:
             for Dinf in self.timedep_Dinf:
                 signal = np.ones(scheme_high.nS)
-                for s in range(1,len(scheme_high.shells)):
+                for s in range(len(scheme_high.shells)):
                     dperp = Dinf+A*((np.log(scheme_high.shells[s]['Delta']/scheme_high.shells[s]['delta']))+3./2.)/(scheme_high.shells[s]['Delta']-scheme_high.shells[s]['delta']/3.)
                     gtab = gradient_table( scheme_high.shells[s]['b']*np.ones(len(scheme_high.shells[s]['grad'])),scheme_high.shells[s]['grad'] )
                     signal[scheme_high.shells[s]['idx']] = single_tensor(gtab,evals = [dperp,dperp,self.d_par])
