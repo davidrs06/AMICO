@@ -434,7 +434,7 @@ class CylinderZeppelinBall( BaseModel ) :
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
-        nwADD = xIC / self.Rs**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwADD = xIC / (2.*self.Rs)**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
         nwa = 1E6 * 2.0 * np.dot(self.Rs,nwADD) / ( nwADD.sum() + 1e-16 )
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         return [v, a, d, nwa], dirs, x, A
@@ -618,7 +618,7 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
-        nwADD = xIC / self.Rs**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwADD = xIC / (2.*self.Rs)**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
         nwa = 1E6 * 2.0 * np.dot(self.Rs,nwADD) / ( nwADD.sum() + 1e-16 )
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
