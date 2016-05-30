@@ -282,8 +282,8 @@ class CylinderZeppelinBall( BaseModel ) :
     def __init__( self ) :
         self.id         = 'CylinderZeppelinBall'
         self.name       = 'Cylinder-Zeppelin-Ball'
-        self.maps_name  = [ 'v', 'a', 'd' ]
-        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density' ]
+        self.maps_name  = [ 'v', 'a', 'd', 'nwa' ]
+        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density', 'Number weighted mean axonal diameter' ]
 
         self.d_par  = 0.6E-3                                                         # Parallel diffusivity [mm^2/s]
         self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
@@ -434,8 +434,10 @@ class CylinderZeppelinBall( BaseModel ) :
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
+        nwADD = xIC / self.Rs**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwa = 1E6 * 2.0 * np.dot(self.Rs,nwADD) / ( nwADD.sum() + 1e-16 )
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
-        return [v, a, d], dirs, x, A
+        return [v, a, d, nwa], dirs, x, A
 
 class CylinderTimedepZeppelinBall( BaseModel ) :
     """Implements the Cylinder-Time dependent Zeppelin-Ball model [1].
@@ -463,8 +465,8 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
     def __init__( self ) :
         self.id         = 'CylinderTimedepZeppelinBall'
         self.name       = 'Cylinder-TimedepZeppelin-Ball'
-        self.maps_name  = [ 'v', 'a', 'd', 'A', 'Dinf' ]
-        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density', 'Characteristic coefficient A', 'Bulk diffusion Dinf' ]
+        self.maps_name  = [ 'v', 'a', 'd', 'A', 'Dinf', 'nwa' ]
+        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density', 'Characteristic coefficient A', 'Bulk diffusion Dinf', 'Number weighted mean axonal diameter' ]
 
         self.d_par  = 0.6E-3                                                         # Parallel diffusivity [mm^2/s]
         self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
@@ -616,11 +618,13 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
+        nwADD = xIC / self.Rs**2 # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwa = 1E6 * 2.0 * np.dot(self.Rs,nwADD) / ( nwADD.sum() + 1e-16 )
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
         timedep_A = np.dot(np.repeat(self.timedep_A,len(self.timedep_Dinf)),xEC)/xEC.sum()
         timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)/xEC.sum()
-        return [v, a, d, timedep_A, timedep_Dinf], dirs, x, A
+        return [v, a, d, timedep_A, timedep_Dinf, nwa], dirs, x, A
 
 class NODDI( BaseModel ) :
     """Implements the NODDI model [2].
