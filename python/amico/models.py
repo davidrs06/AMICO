@@ -438,7 +438,7 @@ class CylinderZeppelinBall( BaseModel ) :
         nwADD = nwADD / ( nwADD.sum() + 1e-16 )
         nwa = 2E6 * np.dot(self.Rs,nwADD)
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
-        return [v, a, d, nwa], dirs, x, A
+        return [v, a, d, nwa], nwADD, xIC/xIC.sum(), dirs, x, A
 
 class CylinderTimedepZeppelinBall( BaseModel ) :
     """Implements the Cylinder-Time dependent Zeppelin-Ball model [1].
@@ -619,14 +619,14 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
-        nwADD = (xIC/xIC.sum()) * (1 / (2.*self.Rs)**2) # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
-        nwADD = nwADD / nwADD.sum()
-        nwa = 1E6 * 2.0 * np.dot(self.Rs,nwADD) / ( nwADD.sum() + 1e-16 )
+        nwADD = (xIC/xIC.sum()) * (1 / (2E6*self.Rs)**2) # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwADD = nwADD / ( nwADD.sum() + 1e-16 )
+        nwa = 2E6 * np.dot(self.Rs,nwADD)
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
         timedep_A = np.dot(np.repeat(self.timedep_A,len(self.timedep_Dinf)),xEC)/xEC.sum()
         timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)/xEC.sum()
-        return [v, a, d, timedep_A, timedep_Dinf, nwa], dirs, x, A
+        return [v, a, d, timedep_A, timedep_Dinf, nwa], nwADD, xIC/xIC.sum(), dirs, x, A
 
 class NODDI( BaseModel ) :
     """Implements the NODDI model [2].
