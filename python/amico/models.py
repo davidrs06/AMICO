@@ -308,6 +308,18 @@ class CylinderZeppelinBall( BaseModel ) :
         params['lambda2'] = lambda2
         return params
 
+    def set_fista_solver( self, regul = 'group-lasso-l2', lambda1 = 4.0, groups = None ) :
+        params = {}
+        params['regul']   = regul
+        params['pos']     = True
+        params['loss']    = 'square'
+        params['lambda1'] = lambda1
+        if groups is None:
+            params['groups'] = np.hstack([np.ones(len(self.Rs)),np.arange(2,len(self.ICVFs)+3)]).astype('int32')
+        else:
+            params['groups']  = groups
+        return params
+
 
     def generate( self, out_path, aux, idx_in, idx_out ) :
         if self.scheme.version != 1 :
@@ -426,7 +438,10 @@ class CylinderZeppelinBall( BaseModel ) :
             return [0, 0, 0], None, None, None
 
         # fit
-        x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
+        if 'regul' in params:
+            x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
+        else:
+            x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
 
         # return estimates
         f1 = x[ :(nD*n1) ].sum()
@@ -486,13 +501,24 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         self.timedep_A = A
         self.timedep_Dinf = Dinf
 
-
     def set_solver( self, lambda1 = 0.0, lambda2 = 4.0 ) :
         params = {}
         params['mode']    = 2
         params['pos']     = True
         params['lambda1'] = lambda1
         params['lambda2'] = lambda2
+        return params
+
+    def set_fista_solver( self, regul = 'group-lasso-l2', lambda1 = 4.0, groups = None ) :
+        params = {}
+        params['regul']   = regul
+        params['pos']     = True
+        params['loss']    = 'square'
+        params['lambda1'] = lambda1
+        if groups is None:
+            params['groups'] = np.hstack([np.ones(len(self.Rs)),np.arange(2,len(self.timedep_A)*len(self.timedep_Dinf)+3)]).astype('int32')
+        else:
+            params['groups']  = groups
         return params
 
 
@@ -611,7 +637,10 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
             return [0, 0, 0], None, None, None
 
         # fit
-        x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
+        if 'regul' in params:
+            x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
+        else:
+            x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
 
         # return estimates
         f1 = x[ :(nD*n1) ].sum()
