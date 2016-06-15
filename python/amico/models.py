@@ -308,6 +308,12 @@ class CylinderZeppelinBall( BaseModel ) :
         params['lambda2'] = lambda2
         return params
 
+    def set_ADD_solver( self, lambda1 = 0.5 ) :
+        params = {}
+        params['lambda'] = lambda1
+        params['ADD'] = True
+        return params
+
     def set_fista_solver( self, regul = 'group-lasso-l2', lambda1 = 4.0, groups = None ) :
         params = {}
         params['regul']   = regul
@@ -440,6 +446,11 @@ class CylinderZeppelinBall( BaseModel ) :
         # fit
         if 'regul' in params:
             x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
+        elif 'ADD' in params:
+            C = np.diag(np.hstack((np.ones(n1)*params['lambda'],np.zeros(n2+n3))))
+            A = np.vstack((A,C))
+            y = np.concatenate((y,np.zeros(n1+n2+n3)))
+            x, _ = scipy.optimize.nnls(np.asfortranarray(A),np.asfortranarray(y))
         else:
             x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
 
@@ -507,6 +518,12 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         params['pos']     = True
         params['lambda1'] = lambda1
         params['lambda2'] = lambda2
+        return params
+
+    def set_ADD_solver( self, lambda1 = 0.5 ) :
+        params = {}
+        params['lambda'] = lambda1
+        params['ADD'] = True
         return params
 
     def set_fista_solver( self, regul = 'group-lasso-l2', lambda1 = 4.0, groups = None ) :
@@ -639,6 +656,11 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         # fit
         if 'regul' in params:
             x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
+        elif 'ADD' in params:
+            C = np.diag(np.hstack((np.ones(n1)*params['lambda'],np.zeros(n2+n3))))
+            A = np.vstack((A,C))
+            y = np.concatenate((y,np.zeros(n1+n2+n3)))
+            x, _ = scipy.optimize.nnls(np.asfortranarray(A),np.asfortranarray(y))
         else:
             x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
 
