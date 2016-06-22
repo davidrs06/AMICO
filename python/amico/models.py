@@ -447,6 +447,7 @@ class CylinderZeppelinBall( BaseModel ) :
         if 'regul' in params:
             x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
         elif 'ADD' in params:
+            # Inspired from http://scicomp.stackexchange.com/questions/10671/tikhonov-regularization-in-the-non-negative-least-square-nnls-pythonscipy
             C = np.diag(np.hstack((np.ones(n1)*params['lambda'],np.zeros(n2+n3))))
             A = np.vstack((A,C))
             y = np.concatenate((y,np.zeros(n1+n2+n3)))
@@ -657,6 +658,7 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         if 'regul' in params:
             x = spams.fistaFlat( np.asfortranarray( y.reshape(-1,1) ), X=A, W0 = np.zeros((A.shape[1],1),dtype='float',order="FORTRAN"), **params )[:,0]
         elif 'ADD' in params:
+            # Inspired from http://scicomp.stackexchange.com/questions/10671/tikhonov-regularization-in-the-non-negative-least-square-nnls-pythonscipy
             C = np.diag(np.hstack((np.ones(n1)*params['lambda'],np.zeros(n2+n3))))
             A = np.vstack((A,C))
             y = np.concatenate((y,np.zeros(n1+n2+n3)))
