@@ -681,6 +681,202 @@ class CylinderTimedepZeppelinBall( BaseModel ) :
         timedep_Dinf = np.dot(np.tile(self.timedep_Dinf,len(self.timedep_A)),xEC)/xEC.sum()
         return [v, a, d, timedep_A, timedep_Dinf, nwa], nwADD, xIC/xIC.sum(), dirs, x, A
 
+class ActiveAx( BaseModel ) :
+    """Implements the ActiveAx model [1].
+
+    ....
+
+    NB: this model works only with schemes containing the full specification of
+        the diffusion gradients (eg gradient strength, small delta etc).
+
+    NB: this model requires Camino to be installed and properly configured
+        in the system; in particular, the script "datasynth" must be placed
+        in your system path.
+
+    References
+    ----------
+    .. [1] Panagiotaki et al. (2012) Compartment models of the diffusion MR signal
+           in brain white matter: A taxonomy and comparison. NeuroImage, 59: 2241-54
+    """
+
+    def __init__( self ) :
+        self.id         = 'CylinderZeppelinBall'
+        self.name       = 'Cylinder-Zeppelin-Ball'
+        self.maps_name  = [ 'v', 'a', 'd', 'nwa' ]
+        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density', 'Number weighted mean axonal diameter' ]
+
+        self.d_par  = 0.6E-3                                                         # Parallel diffusivity [mm^2/s]
+        self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
+        self.ICVFs  = np.arange(0.3,0.9,0.1)                                         # Intra-cellular volume fraction(s) [0..1]
+        self.d_ISOs = np.array( [ 2.0E-3 ] )                                         # Isotropic diffusivitie(s) [mm^2/s]
+        self.isExvivo  = False                                                       # Add dot compartment to dictionary (exvivo data)
+        self.singleb0  = True                                                        # Merge b0 images into a single volume for fitting
+
+    @property
+    def nAtoms(self):
+        if self.isExvivo:
+            return len(self.Rs)+len(self.ICVFs)+len(self.d_ISOs)+1
+        else:
+            return len(self.Rs)+len(self.ICVFs)+len(self.d_ISOs)
+
+    def set( self, d_par, Rs, ICVFs, d_ISOs ) :
+        self.d_par  = d_par
+        self.Rs     = np.array(Rs)
+        self.ICVFs  = np.array(ICVFs)
+        self.d_ISOs = np.array(d_ISOs)
+
+
+    def set_solver( self, lambda1 = 0.0, lambda2 = 4.0 ) :
+        params = {}
+        params['mode']    = 2
+        params['pos']     = True
+        params['lambda1'] = lambda1
+        params['lambda2'] = lambda2
+        return params
+
+
+    def generate( self, out_path, aux, idx_in, idx_out ) :
+        if self.scheme.version != 1 :
+            raise RuntimeError( 'This model requires a "VERSION: STEJSKALTANNER" scheme.' )
+
+        scheme_high = amico.lut.create_high_resolution_scheme( self.scheme, b_scale=1E6 )
+        filename_scheme = pjoin( out_path, 'scheme.txt' )
+        np.savetxt( filename_scheme, scheme_high.raw, fmt='%15.8e', delimiter=' ', header='VERSION: STEJSKALTANNER', comments='' )
+
+        # temporary file where to store "datasynth" output
+        filename_signal = pjoin( tempfile._get_default_tempdir(), next(tempfile._get_candidate_names())+'.Bfloat' )
+
+        nATOMS = len(self.Rs) * len(self.ICVFs) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Anisotropic compartment (coupled IC/EC atoms)
+        for R in self.Rs :
+            CMD = 'datasynth -synthmodel compartment 1 CYLINDERGPD %E 0 0 %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( self.d_par*1E-6, R, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            ic_signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+            for ICVF in self.ICVFs :
+                d = self.d_par*(1.0-ICVF)
+                CMD = 'datasynth -synthmodel compartment 1 ZEPPELIN %E 0 0 %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( self.d_par*1E-6, d*1e-6, filename_scheme, filename_signal )
+                subprocess.call( CMD, shell=True )
+                if not exists( filename_signal ) :
+                    raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+                ec_signal  = np.fromfile( filename_signal, dtype='>f4' )
+                if exists( filename_signal ) :
+                    remove( filename_signal )
+
+                signal = ICVF*ic_signal + (1-ICVF)*ec_signal
+                lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, False )
+                np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+                progress.update()
+
+        # Ball(s)
+        for d in self.d_ISOs :
+            CMD = 'datasynth -synthmodel compartment 1 BALL %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( d*1e-6, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+
+            lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, True )
+            np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+            progress.update()
+
+
+    def resample( self, in_path, idx_out, Ylm_out ) :
+        KERNELS = {}
+        KERNELS['model'] = self.id
+        KERNELS['aniso'] = np.zeros( (len(self.Rs)*len(self.ICVFs),181,181,self.scheme.nS,), dtype=np.float32 )
+        KERNELS['iso'] = np.zeros( (len(self.d_ISOs),self.scheme.nS,), dtype=np.float32 )
+        KERNELS['Rs'] = np.zeros(len(self.Rs)*len(self.ICVFs), dtype=np.float32 )
+        KERNELS['ICVFs'] = np.zeros(len(self.Rs)*len(self.ICVFs), dtype=np.float32 )
+        KERNELS['norms'] = np.zeros( (self.scheme.dwi_count, len(self.Rs)*len(self.ICVFs)) )
+
+        nATOMS = len(self.Rs)*len(self.ICVFs) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Anisotropic compartment (coupled IC and EC)
+        for ic in xrange(len(self.Rs)) :
+            for ec in xrange(len(self.ICVFs)) :
+                lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+                idx = progress.i - 1
+                KERNELS['aniso'][idx,:,:,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, False )
+                KERNELS['Rs'][idx] = self.Rs[ic]
+                KERNELS['ICVFs'][idx] = self.ICVFs[ec]
+                KERNELS['norms'][:,idx] = 1 / np.linalg.norm( KERNELS['aniso'][idx,0,0,self.scheme.dwi_idx] ) # norm of coupled atoms (for l1 minimization)
+                progress.update()
+
+        # Ball(s)
+        for i in xrange(len(self.d_ISOs)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['iso'][i,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, True )
+            progress.update()
+
+        return KERNELS
+
+
+    def fit( self, y, dirs, KERNELS, params ) :
+        nD = dirs.shape[0]
+        n1 = len(self.Rs)
+        n2 = len(self.ICVFs)
+        n3 = len(self.d_ISOs)
+
+        # prepare DICTIONARY from dirs and lookup tables
+        A = np.zeros( (len(y), nD*(n1*n2)+n3 ), dtype=np.float64, order='F' )
+        o = 0
+        for i in xrange(nD) :
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[i] )
+            A[:,o:(o+n1*n2)] = KERNELS['aniso'][:,i1,i2,:].T
+            o += n1*n2
+        A[:,o:] = KERNELS['iso'].T
+        if self.isExvivo:
+            A = np.hstack((A,np.ones((A.shape[0],1))))
+        if self.singleb0:
+            A = np.vstack((np.ones((1,A.shape[1])),A[self.scheme.dwi_idx,:]))
+            y = np.hstack((y[self.scheme.b0_idx].mean(),y[self.scheme.dwi_idx]))
+
+        # empty dictionary
+        if A.shape[1] == 0 :
+            return [0, 0, 0], None, None, None
+
+        # fit
+        # estimate IC and EC compartments and promote sparsity
+        if self.singleb0:
+            An = A[ 1:, :-1 ] * KERNELS['norms']
+            yy = y[ 1: ].reshape(-1,1)
+        else:
+            An = A[ self.scheme.dwi_idx, :-1 ] * KERNELS['norms']
+            yy = y[ self.scheme.dwi_idx ].reshape(-1,1)
+        x = spams.lasso( np.asfortranarray(yy), D=np.asfortranarray(An), **params ).todense().A1
+        
+        # debias coefficients
+        x = np.append( x, 1 )
+        if self.isExvivo == True :
+            x = np.append( x, 1 )
+        idx = x>0
+        x[idx], _ = scipy.optimize.nnls( A[:,idx], y )
+
+        # return estimates
+        xx = x / ( x.sum() + 1e-16 )
+        xWM  = xx[:nD*n1*n2]
+        xWM = xWM / ( xWM.sum() + 1e-16 )
+        f1 = np.dot( KERNELS['ICVFs'], xWM )
+        f2 = np.dot( (1.0-KERNELS['ICVFs']), xWM )
+        v = f1 / ( f1 + f2 + 1e-16 )
+        a = 1E6 * 2.0 * np.dot(KERNELS['Rs'],xWM)
+        xIC = np.reshape(xWM,(n1,n2)).sum(1)
+        xEC = np.reshape(xWM,(n1,n2)).sum(0)
+        nwADD = (xIC/xIC.sum()) * (1 / (2E6*self.Rs)**2) # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
+        nwADD = nwADD / ( nwADD.sum() + 1e-16 )
+        nwa = 2E6 * np.dot(self.Rs,nwADD)
+        d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
+        return [v, a, d, nwa], np.hstack((xIC/xIC.sum(),xEC/xEC.sum(),x[nD*n1*n2:])), dirs, x, A
+
 class NODDI( BaseModel ) :
     """Implements the NODDI model [2].
 
@@ -1012,10 +1208,10 @@ class WatsonZeppelinBall( BaseModel ) :
         if self.isExvivo == True :
             nATOMS += 1
         A = np.ones( (len(y), nATOMS_aniso*nD+nATOMS_iso), dtype=np.float64, order='F' )
-	for d in xrange(nD):
-	    i1, i2 = amico.lut.dir_TO_lut_idx( dirs[d] )
-	    A[:,d*nATOMS_aniso:(d+1)*nATOMS_aniso] = KERNELS['wm'][:,i1,i2,:].T
-	A[:,-1]  = KERNELS['iso']
+        for d in xrange(nD):
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[d] )
+            A[:,d*nATOMS_aniso:(d+1)*nATOMS_aniso] = KERNELS['wm'][:,i1,i2,:].T
+        A[:,-1]  = KERNELS['iso']
 
         # estimate CSF partial volume (and isotropic restriction, if exvivo) and remove from signal
         x, _ = scipy.optimize.nnls( A, y )

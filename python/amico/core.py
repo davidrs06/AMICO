@@ -266,7 +266,7 @@ class Evaluation :
                           self.get_config('dim')[2], len(self.model.maps_name)], dtype=np.float32 )
 
         HIST = np.zeros( [self.get_config('dim')[0], self.get_config('dim')[1], 
-                          self.get_config('dim')[2], 2, self.KERNELS['wmr'].shape[0]], dtype=np.float32 )
+                          self.get_config('dim')[2], self.model.nAtoms], dtype=np.float32 )
 
         if self.get_config('doComputeNRMSE') :
             NRMSE = np.zeros( [self.get_config('dim')[0], 
@@ -304,7 +304,7 @@ class Evaluation :
                         dirs = DIRs[ix,iy,iz,:]
 
                     # dispatch to the right handler for each model
-                    MAPs[ix,iy,iz,:], HIST[ix,iy,iz,0,:], HIST[ix,iy,iz,1,:], DIRs[ix,iy,iz,:], x, A = self.model.fit( y, dirs.reshape(-1,3), self.KERNELS, self.get_config('solver_params') )
+                    MAPs[ix,iy,iz,:], HIST[ix,iy,iz,:], DIRs[ix,iy,iz,:], x, A = self.model.fit( y, dirs.reshape(-1,3), self.KERNELS, self.get_config('solver_params') )
 
                     # compute fitting error
                     if self.get_config('doComputeNRMSE') :
@@ -340,8 +340,7 @@ class Evaluation :
         self.RESULTS = {}
         self.RESULTS['DIRs']  = DIRs
         self.RESULTS['MAPs']  = MAPs
-        self.RESULTS['NW-ADD'] = HIST[:,:,:,0,:]
-        self.RESULTS['VW-ADD'] = HIST[:,:,:,1,:]
+        self.RESULTS['HIST'] = HIST
         if self.get_config('doComputeNRMSE') :
             self.RESULTS['NRMSE'] = NRMSE
         if self.get_config('doSaveCorrectedDWI') :
