@@ -50,6 +50,7 @@ methods
         % Configure NODDI toolbox
         % =======================
         protocolHR = obj.Scheme2noddi( schemeHR );
+        % protocolHR = Scheme2noddi_StejskalTanner( schemeHR );
 
         % set the parallel/isotropic diffusivity from AMICO's configuration (accounting for units difference)
         dPar = CONFIG.model.dPar * 1E-6;
