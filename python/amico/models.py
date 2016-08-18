@@ -293,6 +293,13 @@ class CylinderZeppelinBall( BaseModel ) :
         self.singleb0  = True                                                        # Merge b0 images into a single volume for fitting
 
 
+    @property
+    def nAtoms(self):
+        if self.isExvivo:
+            return len(self.Rs)+len(self.ICVFs)+len(self.d_ISOs)+1
+        else:
+            return len(self.Rs)+len(self.ICVFs)+len(self.d_ISOs)
+
     def set( self, d_par, Rs, ICVFs, d_ISOs ) :
         self.d_par  = d_par
         self.Rs     = np.array(Rs)
@@ -312,6 +319,12 @@ class CylinderZeppelinBall( BaseModel ) :
         params = {}
         params['lambda'] = lambda1
         params['ADD'] = True
+        return params
+
+    def set_LD_solver( self, lambda1 = 0.5 ) :
+        params = {}
+        params['lambda'] = lambda1
+        params['LD'] = True
         return params
 
     def set_fista_solver( self, regul = 'group-lasso-l2', lambda1 = 4.0, groups = None ) :
@@ -452,6 +465,13 @@ class CylinderZeppelinBall( BaseModel ) :
             A = np.vstack((A,C))
             y = np.concatenate((y,np.zeros(n1+n2+n3)))
             x, _ = scipy.optimize.nnls(np.asfortranarray(A),np.asfortranarray(y))
+        elif 'LD' in params:
+            # Inspired from http://scicomp.stackexchange.com/questions/10671/tikhonov-regularization-in-the-non-negative-least-square-nnls-pythonscipy
+            C = (np.diag(np.hstack((np.ones(n1)*params['lambda'],np.zeros(n2+n3)))) + np.diag(np.hstack((-np.ones(n1-1)*params['lambda'],np.zeros(n2+n3))),-1))
+            C = np.vstack((C,np.dot(C,C)))
+            A = np.vstack((A,C))
+            y = np.concatenate((y,np.zeros(C.shape[0])))
+            x, _ = scipy.optimize.nnls(np.asfortranarray(A),np.asfortranarray(y))
         else:
             x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
 
@@ -460,12 +480,13 @@ class CylinderZeppelinBall( BaseModel ) :
         f2 = x[ (nD*n1):(nD*(n1+n2)) ].sum()
         v = f1 / ( f1 + f2 + 1e-16 )
         xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
+        xEC = x[nD*n1:nD*(n1+n2)].reshape(-1,n2).sum(axis=0)
         a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
         nwADD = (xIC/xIC.sum()) * (1 / (2E6*self.Rs)**2) # [Benjamini et al., "White matter microstructure from nonparametric axon diameter distribution mapping", Neuroimage 2016]
         nwADD = nwADD / ( nwADD.sum() + 1e-16 )
         nwa = 2E6 * np.dot(self.Rs,nwADD)
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
-        return [v, a, d, nwa], nwADD, xIC/xIC.sum(), dirs, x, A
+        return [v, a, d, nwa], np.hstack((xIC/xIC.sum(),xEC/xEC.sum(),x[-1])), dirs, x, A
 
 class CylinderTimedepZeppelinBall( BaseModel ) :
     """Implements the Cylinder-Time dependent Zeppelin-Ball model [1].
