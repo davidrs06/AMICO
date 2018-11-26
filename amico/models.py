@@ -458,7 +458,195 @@ class CylinderZeppelinBall( BaseModel ) :
         d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
         return [v, a, d], dirs, x, A
 
+# Helper methods for HOTmix
+def compute_genBmatrix_alignedZ(scheme,n,gratio = 267.51525e3):
+    B = np.zeros((scheme.nS,3))
+    bvals = gratio**2 * scheme.raw[:,3]**2 * scheme.raw[:,5]**2 * (scheme.raw[:,4]-scheme.raw[:,5]/3.)
+    bvals_square = gratio**4 * scheme.raw[:,3]**4 * scheme.raw[:,5]**4 * (scheme.raw[:,4]-3*scheme.raw[:,5]/5.)
+    ng = (scheme.raw[:,:3].dot(n)[:,0])**2
+    B[:,0] = -bvals*ng                   # D_par^(2)
+    B[:,1] = -bvals*(1-ng)               # D_perp^(2)
+    B[:,2] = bvals_square * (1-ng)**2    # D_perp^(4)
+    return B
 
+class CylinderHOTmixBall( BaseModel ) :
+    """Implements the Cylinder-HOTmix-Ball model [1].
+
+    The intra-cellular contributions from within the axons are modeled as "cylinders"
+    with specific radii (Rs) and a given axial diffusivity (d_par).
+    Extra-cellular contributions are modeled as a mixture of HOT tensors with the same
+    axial diffusivity as the cylinders (d_par) and perpendicular diffusivities calculated from
+    a selection of values for D_perp^{(2)} (d_perp_2) and D_perp^{(4)} (d_perp_4).
+    Isotropic contributions are modeled as tensors with isotropic diffusivities (d_ISOs).
+
+    NB: this model works only with schemes containing the full specification of
+        the diffusion gradients (eg gradient strength, small delta etc).
+
+    NB: this model requires Camino to be installed and properly configured
+        in the system; in particular, the script "datasynth" must be placed
+        in your system path.
+
+
+    References
+    ----------
+    .. [1] Romascano et al. (2018) HOTmix: characterizing hindered diffusion
+           using a mixture of generalized higher order tensors. ISMRM 1846
+
+    """
+
+    def __init__( self ) :
+        self.id         = 'CylinderHOTmixBall'
+        self.name       = 'Cylinder-HOTmix-Ball'
+        self.maps_name  = [ 'v', 'a', 'd' ]
+        self.maps_descr = [ 'Intra-cellular volume fraction', 'Mean axonal diameter', 'Axonal density' ]
+
+        self.d_par  = 2.0E-3                                                         # Parallel diffusivity [mm^2/s]
+        self.Rs     = np.concatenate( ([0.01],np.linspace(0.5,8.0,20.0)) ) * 1E-6    # Radii of the axons [meters]
+        self.dPerps_2 = np.linspace(1E-4,2E-3,10)                                    # HOTmix D_\perp^{(2)} values
+        self.dPerps_4 = np.linspace(1e-5,5e-5,10)                                    # HOTmix D_\perp^{(4)} values
+        self.d_ISOs = np.array( [ 3.0E-3 ] )                                         # Isotropic diffusivitie(s) [mm^2/s]
+        self.isExvivo = False                                                        # Add dot compartment to dictionary (exvivo data)
+
+    def set( self, d_par, Rs, dPerps_2, dPerps_4, d_ISOs ) :
+        self.d_par     = d_par
+        self.Rs        = np.array(Rs)
+        self.dPerps_2  = np.array(dPerps_2)
+        self.dPerps_4  = np.array(dPerps_4)
+        self.d_ISOs = np.array(d_ISOs)
+
+    def set_solver( self, lambda1 = 0.0, lambda2 = 4.0 ) :
+        params = {}
+        params['mode']    = 2
+        params['pos']     = True
+        params['lambda1'] = lambda1
+        params['lambda2'] = lambda2
+        return params
+
+    def generate( self, out_path, aux, idx_in, idx_out ) :
+        if self.scheme.version != 1 :
+            raise RuntimeError( 'This model requires a "VERSION: STEJSKALTANNER" scheme.' )
+
+        scheme_high = amico.lut.create_high_resolution_scheme( self.scheme, b_scale=1E6 )
+        filename_scheme = pjoin( out_path, 'scheme.txt' )
+        np.savetxt( filename_scheme, scheme_high.raw, fmt='%15.8e', delimiter=' ', header='VERSION: STEJSKALTANNER', comments='' )
+
+        # temporary file where to store "datasynth" output
+        filename_signal = pjoin( tempfile._get_default_tempdir(), next(tempfile._get_candidate_names())+'.Bfloat' )
+
+        nATOMS = len(self.Rs) + len(self.dPerps_2)*len(self.dPerps_4) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Cylinder(s)
+        for R in self.Rs :
+            CMD = 'datasynth -synthmodel compartment 1 CYLINDERGPD %E 0 0 %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( self.d_par*1E-6, R, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+
+            lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, False )
+            np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+            progress.update()
+
+        # HOTmix
+        B = compute_genBmatrix_alignedZ(scheme_high,np.array([[0],[0],[1]]))
+        for d_perp_2 in self.dPerps_2:
+            for d_perp_4 in self.dPerps_4:
+                signal  = np.exp(B.dot(np.array([self.d_par,d_perp_2,d_perp_4**2])))
+                lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, False )
+                np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+                progress.update()
+
+        # Ball(s)
+        for d in self.d_ISOs :
+            CMD = 'datasynth -synthmodel compartment 1 BALL %E -schemefile %s -voxels 1 -outputfile %s 2> /dev/null' % ( d*1e-6, filename_scheme, filename_signal )
+            subprocess.call( CMD, shell=True )
+            if not exists( filename_signal ) :
+                raise RuntimeError( 'Problems generating the signal with "datasynth"' )
+            signal  = np.fromfile( filename_signal, dtype='>f4' )
+            if exists( filename_signal ) :
+                remove( filename_signal )
+            lm = amico.lut.rotate_kernel( signal, aux, idx_in, idx_out, True )
+            np.save( pjoin( out_path, 'A_%03d.npy'%progress.i ), lm )
+            progress.update()
+
+
+    def resample( self, in_path, idx_out, Ylm_out, doMergeB0 ) :
+        if doMergeB0:
+            nS = 1+self.scheme.dwi_count
+            merge_idx = np.hstack((self.scheme.b0_idx[0],self.scheme.dwi_idx))
+        else:
+            nS = self.scheme.nS
+            merge_idx = np.arange(nS)
+
+        KERNELS = {}
+        KERNELS['model'] = self.id
+        KERNELS['wmr'] = np.zeros( (len(self.Rs),181,181,nS,), dtype=np.float32 )
+        KERNELS['wmh'] = np.zeros( (len(self.dPerps_2)*len(self.dPerps_4),181,181,nS,), dtype=np.float32 )
+        KERNELS['iso'] = np.zeros( (len(self.d_ISOs),nS,), dtype=np.float32 )
+        nATOMS = len(self.Rs) + len(self.dPerps_2)*len(self.dPerps_4) + len(self.d_ISOs)
+        progress = ProgressBar( n=nATOMS, prefix="   ", erase=True )
+
+        # Cylinder(s)
+        for i in xrange(len(self.Rs)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['wmr'][i,:,:,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, False )[:,:,merge_idx]
+            progress.update()
+
+        # HOTmix
+        for i in xrange(len(self.dPerps_2)*len(self.dPerps_4)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['wmh'][i,:,:,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, False )[:,:,merge_idx]
+            progress.update()
+
+        # Ball(s)
+        for i in xrange(len(self.d_ISOs)) :
+            lm = np.load( pjoin( in_path, 'A_%03d.npy'%progress.i ) )
+            KERNELS['iso'][i,:] = amico.lut.resample_kernel( lm, self.scheme.nS, idx_out, Ylm_out, True )[merge_idx]
+            progress.update()
+        return KERNELS
+
+    def fit( self, y, dirs, KERNELS, params ) :
+        nD = dirs.shape[0]
+        n1 = len(self.Rs)
+        n2 = len(self.dPerps_2)*len(self.dPerps_4)
+        n3 = len(self.d_ISOs)
+        if self.isExvivo:
+            nATOMS = nD*(n1+n2)+n3+1
+        else:
+            nATOMS = nD*(n1+n2)+n3
+
+        # prepare DICTIONARY from dirs and lookup tables
+        A = np.ones( (len(y), nATOMS ), dtype=np.float64, order='F' )
+        o = 0
+        for i in xrange(nD) :
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[i] )
+            A[:,o:(o+n1)] = KERNELS['wmr'][:,i1,i2,:].T
+            o += n1
+
+        for i in xrange(nD) :
+            i1, i2 = amico.lut.dir_TO_lut_idx( dirs[i] )
+            A[:,o:(o+n2)] = KERNELS['wmh'][:,i1,i2,:].T
+            o += n2
+        A[:,o:] = KERNELS['iso'].T
+
+        # empty dictionary
+        if A.shape[1] == 0 :
+            return [0, 0, 0], None, None, None
+
+        # fit
+        x = spams.lasso( np.asfortranarray( y.reshape(-1,1) ), D=A, **params ).todense().A1
+
+        # return estimates
+        f1 = x[ :(nD*n1) ].sum()
+        f2 = x[ (nD*n1):(nD*(n1+n2)) ].sum()
+        v = f1 / ( f1 + f2 + 1e-16 )
+        xIC = x[:nD*n1].reshape(-1,n1).sum(axis=0)
+        a = 1E6 * 2.0 * np.dot(self.Rs,xIC) / ( f1 + 1e-16 )
+        d = (4.0*v) / ( np.pi*a**2 + 1e-16 )
+        return [v, a, d], dirs, x, A
 
 class NODDI( BaseModel ) :
     """Implements the NODDI model [2].
